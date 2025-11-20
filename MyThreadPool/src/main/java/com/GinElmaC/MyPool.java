@@ -72,6 +72,7 @@ public class MyPool {
 
     /**
      * 将线程的固定方法封装成内部类
+     * 由于list的引用是强引用，所以Thread如果不进行死循环的话，run结束后就会结束生命周期，变为僵尸线程，无法复用也不会被回收
      */
     class CoreThread extends Thread{
         @Override
@@ -86,6 +87,10 @@ public class MyPool {
             }
         }
     }
+
+    /**
+     * 辅助线程
+     */
     class SupportThread extends Thread{
         @Override
         public void run() {

@@ -4,6 +4,13 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>2.6.7</version>
+        <relativePath/>
+    </parent>
+
     <groupId>com.GinElmaC.BaGu</groupId>
     <artifactId>BaGu</artifactId>
     <version>1.0-SNAPSHOT</version>
@@ -15,6 +22,15 @@
         <module>MyInterface</module>
         <module>MyHashMap</module>
         <module>MySpring</module>
+        <module>MyMyBatis</module>
+        <module>StrongAndWake</module>
+        <module>Netty</module>
+        <module>RocketMQ</module>
+        <module>XuLieHua</module>
+        <module>DesignModel</module>
+        <module>JavaAndPy</module>
+        <module>MyJVM</module>
+        <module>eventloop-demo</module>
     </modules>
 
     <properties>

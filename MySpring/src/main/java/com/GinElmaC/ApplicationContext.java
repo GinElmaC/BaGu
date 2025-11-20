@@ -1,10 +1,11 @@
 package com.GinElmaC;
 
 import com.GinElmaC.annotation.Component;
+import com.GinElmaC.annotation.PostConstruct;
 
-import java.io.File;
 import java.io.IOException;
 import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.URL;
@@ -26,48 +27,71 @@ public class ApplicationContext {
     public ApplicationContext(String packageName) throws Exception {
         initContext(packageName);
     }
+    public void initContext(String packageName) throws Exception {
+        /**
+         * 初始化上下文，获取所有的beanDefinition
+         */
+        scanpackage(packageName).stream() // 获取packageName下所有的.class文件
+                .filter(this::scanCreate) // 过滤出需要初始化的Bean
+                .forEach(this::wrapper); // 将类封装成BeanDefinition
+        /**
+         * 初始化BeanPostProcessor
+         */
+        initBeanPostProcessor();
+        /**
+         * 创建bean
+         */
+        beanDefinitionMap.values().forEach(this::createBean);//利用BeanDefinition创建Bean
+    }
+    private void initBeanPostProcessor() {
+        beanDefinitionMap.values().stream()
+                .filter(f-> BeanPostProcessor.class.isAssignableFrom(f.getBeanType())) // 证明当前要创建的是BeanPostProcessor类或者实现类
+                .map(this::createBean)
+                .map(o->(BeanPostProcessor)o)
+                .forEach(beanPostProcessors::add);
+    }
 
     /**
      * 储存Bean，key为bean的名字，value为bean
      */
-    private Map<String,Object> ioc = new HashMap<>();
-    private Map<String,BeanDefinition> beanDefinitionMap = new HashMap<>();
+    private Map<String,Object> loadingIoc = new HashMap<>(); //一级缓存，放置被初始化的bean
+    private Map<String,BeanDefinition> beanDefinitionMap = new HashMap<>(); //二级缓存，bean工厂
+    private Map<String,Object> ioc = new HashMap<>(); //三级缓存，完成的bean
 
+    private List<BeanPostProcessor> beanPostProcessors = new ArrayList<>();
 
     public Object getBean(String name){
-        return this.ioc.get(name);
+        if(name == null){
+            return null;
+        }
+        Object Bean = this.ioc.get(name);
+        if(Bean != null){
+            return Bean;
+        }
+        if(beanDefinitionMap.containsKey(name)){
+            return createBean(beanDefinitionMap.get(name));
+        }
+        return null;
     }
 
-    /**
-     * 这里也即使为什么Spring容器在使用class获取bean时需要遍历整个容器，因为底层的map并没有用class作为key
-     * 如果使用了class作为key，假如现在需要获得一个object类型的bean，那么容器中的所有对象都满足isAssignableFrom
-     */
     public <T> T getBean(Class<T> beanType){
         /**
-         * a.isAssignableFrom(b.getClass()) 可以用来检查a是否是b的同类或者子类实现类
+         * 获取bean的名字
          */
-        return this.ioc.values().stream()
-                .filter(bean -> beanType.isAssignableFrom(bean.getClass()))
-                .map(bean->(T)bean)
-                .findAny()
-                .orElseGet(null);
+        String name = this.beanDefinitionMap.values().stream()
+                .filter(bd -> beanType.isAssignableFrom(bd.getBeanType()))
+                .map(BeanDefinition::getName)
+                .findFirst()
+                .orElse(null);
+        return (T)getBean(name);
     }
+
     public <T> List<T> getBeans(Class<T> beanType){
-        return this.ioc.values().stream()
-                .filter(bean -> beanType.isAssignableFrom(bean.getClass()))
-                .map(bean->(T)bean)
-                .toList();
-    }
-
-
-    public void initContext(String packageName) throws Exception {
-        /**
-         * isAnnotationPresent是java反射的一个APi，可以检查某个类是否被某个注解标注
-         */
-        scanpackage(packageName).stream()
-                .filter(this::scanCreate) // 过滤出需要初始化的Bean
-                .map(this::wrapper) // 将类封装成BeanDefinition
-                .forEach(this::createBean); //利用BeanDefinition创建Bean
+        return this.beanDefinitionMap.values().stream()
+                .filter(bd -> beanType.isAssignableFrom(bd.getBeanType()))
+                .map(BeanDefinition::getName)
+                .map(this::getBean)
+                .map(bean->(T)bean).toList();
     }
 
     /**
@@ -91,17 +115,28 @@ public class ApplicationContext {
         Path path = Path.of(file);
         /**
          * 遍历文件夹中的文件，并对于每一个文件执行后面的方法
+         * walkFileTree(Path path,FileVisitor<? super Path> visitor) 可以从path开始遍历文件树，对于每一个遍历到的文件执行后面的回调方法
+         * SimpleFileVisitor就是FileVisitor<? super Path>的实现类
          */
         Files.walkFileTree(path,new SimpleFileVisitor<>(){
             /**
              *file就是遍历到的文件
+             * FileVisitResult是文件的遍历结果枚举，其中有四个结果：
+             * CONTINUE -继续正常遍历
+             * TERMINATE -立即终止整个过程
+             * SKIP_SUBTREE -跳过当前目录的子项
+             * SKIP_SIBLINGS -跳过当前文件/目录的所有兄弟项
              */
             @Override
             public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
                 //意思就是每一个文件都进行遍历
+                //转化为绝对路径
                 Path abs = file.toAbsolutePath();
+                //如果是".class"结尾的，则代表使我们需要进行加载的bean
                 if(abs.toString().endsWith(".class")){
+                    //转化回全限定包名
                     String replace = abs.toString().replace("\\",".");
+                    //截取目标包名（相对路径）
                     int packageIndex = replace.indexOf(packageName);
                     String className = replace.substring(packageIndex, replace.length() - ".class".length());
                     try {
@@ -143,38 +178,106 @@ public class ApplicationContext {
      * 判断bean是否已经被创建
      * @param beanDefinition
      */
-    protected  void createBean(BeanDefinition beanDefinition){
+    protected Object createBean(BeanDefinition beanDefinition){
         String name = beanDefinition.getName();
+        /**
+         * 三级缓存存在，直接返回
+         */
         if(ioc.containsKey(name)){
-            return;
+            return ioc.get(name);
         }
-        doCreateBean(beanDefinition);
+        /**
+         * 为了提前暴露，单例模式下的循环依赖解决方案
+         */
+        if(loadingIoc.containsKey(name)){
+            return loadingIoc.get(name);
+        }
+        /**
+         * 如果都没有，则创建
+         */
+        return doCreateBean(beanDefinition);
     }
 
     /**
      * 真正的创建Bean
      * @param beanDefinition
      */
-    private void doCreateBean(BeanDefinition beanDefinition){
+    private Object doCreateBean(BeanDefinition beanDefinition){
         Constructor<?> constructor = beanDefinition.getConstructor();
         Object bean = null;
         try {
-            //调用构造函数来创造bean
+            /**
+             * 创造Bean实例
+             */
             bean = constructor.newInstance();
-            //获取PostConstruct标注的方法
-//            Method postConstruct = beanDefinition.getPostConstruct();
-            List<Method> postConstructList = beanDefinition.getPostConstructs();
-            if(postConstructList != null && postConstructList.size()>0){
-                //使用创造出来的bean进行调用
-                for (Method postConstruct:postConstructList) {
-                    postConstruct.invoke(bean);
-                }
-            }
+            /**
+             * 先放入一级缓存
+             */
+            loadingIoc.put(beanDefinition.getName(),bean);
+            /**
+             * 注入Bean属性
+             */
+            autowiredBean(bean,beanDefinition);
+            /**
+             * 调用PostConstruct方法
+             */
+            bean = initializedBean(bean,beanDefinition);
+            /*
+            放入三级缓存并删除一级缓存中的内容
+             */
+            loadingIoc.remove(beanDefinition.getName());
+            ioc.put(beanDefinition.getName(),bean);
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
-        ioc.put(beanDefinition.getName(),bean);
+        return bean;
+    }
 
+    /**
+     * 调用PostConstruct方法
+     * @param bean
+     * @param beanDefinition
+     * @throws InvocationTargetException
+     * @throws IllegalAccessException
+     */
+    private Object initializedBean(Object bean, BeanDefinition beanDefinition) throws InvocationTargetException, IllegalAccessException {
+        /**
+         * before方法
+         */
+        for(BeanPostProcessor beanPostProcessor:beanPostProcessors){
+            bean = beanPostProcessor.beforeInitializeBean(bean,beanDefinition.getName());
+        }
+
+        List<Method> postConstructList = beanDefinition.getPostConstructs();
+        if(postConstructList != null && postConstructList.size()>0){
+            //使用创造出来的bean进行调用
+            for (Method postConstruct:postConstructList) {
+                postConstruct.invoke(bean);
+            }
+        }
+
+        /**
+         * after方法
+         */
+        for(BeanPostProcessor beanPostProcessor:beanPostProcessors){
+            bean = beanPostProcessor.afterInitializeBean(bean,beanDefinition.getName());
+        }
+
+        return bean;
+    }
+
+    /**
+     * 自动注入
+     * @param bean
+     * @param beanDefinition
+     * @throws IllegalAccessException
+     */
+    private void autowiredBean(Object bean, BeanDefinition beanDefinition) throws IllegalAccessException {
+        for(Field field:beanDefinition.getAutowiredFields()){
+            field.setAccessible(true);
+            Object autowiredBean = null;
+            field.set(bean,getBean(field.getType()));//根据类型自动注入
+        }
     }
 
 }

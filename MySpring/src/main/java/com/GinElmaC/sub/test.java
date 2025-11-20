@@ -12,11 +12,6 @@ public class test {
 
     @PostConstruct
     public void init(){
-        System.out.println("初始化cat");
-    }
-
-    @PostConstruct
-    public void init2(){
-        System.out.println("第二个方法");
+        System.out.println("初始化cat"+cat);
     }
 }
